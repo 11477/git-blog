@@ -22,10 +22,10 @@ theme = 'PaperMod'
 
   [[params.socialIcons]]
     name = 'github'
-    url = 'https://github.com/yinchengwang'
+    url = 'https://github.com/11477'
 
 [params.editPost]
-  URL = 'https://github.com/yinchengwang/git-blog/tree/main/content'
+  URL = 'https://github.com/11477/git-blog/tree/main/content'
   Text = '建议修改'
   appendFilePath = true
 

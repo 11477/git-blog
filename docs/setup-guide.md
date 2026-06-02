@@ -12,7 +12,7 @@
 | 主题 | PaperMod |
 | 托管 | GitHub Pages |
 | CI/CD | GitHub Actions |
-| 域名 | `yinchengwang.github.io` |
+| 域名 | `11477.github.io` |
 
 ---
 
@@ -88,7 +88,7 @@ git submodule update --remote --merge
 编辑 `hugo.toml`：
 
 ```toml
-baseURL = 'https://yinchengwang.github.io/'
+baseURL = 'https://11477.github.io/'
 locale = 'zh-cn'
 title = 'cyw777的博客'
 theme = 'PaperMod'
@@ -112,10 +112,10 @@ theme = 'PaperMod'
 
   [[params.socialIcons]]
     name = 'github'
-    url = 'https://github.com/yinchengwang'
+    url = 'https://github.com/11477'
 
 [params.editPost]
-  URL = 'https://github.com/yinchengwang/git-blog/tree/main/content'
+  URL = 'https://github.com/11477/git-blog/tree/main/content'
   Text = '建议修改'
   appendFilePath = true
 
@@ -318,7 +318,7 @@ jobs:
 ### 5.4 推送代码触发部署
 
 ```bash
-git remote add origin https://github.com/yinchengwang/git-blog.git
+git remote add origin https://github.com/11477/git-blog.git
 git add .
 git commit -m "init: Hugo blog with PaperMod theme"
 git branch -M main
@@ -333,7 +333,7 @@ git push -u origin main
 
 ### 6.1 配置域名
 
-1. 在域名服务商添加 CNAME 记录指向 `yinchengwang.github.io`
+1. 在域名服务商添加 CNAME 记录指向 `11477.github.io`
 2. 在仓库 **Settings → Pages → Custom domain** 填入域名
 3. 勾选 **Enforce HTTPS**
 
