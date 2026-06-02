@@ -1,4 +1,4 @@
-# 胤澄的博客
+# cyw777的博客
 
 基于 Hugo + PaperMod 主题搭建的个人博客，托管于 GitHub Pages。
 
@@ -22,7 +22,7 @@ hugo server --buildDrafts
 hugo --minify
 ```
 
-预览地址：`http://localhost:1313`:1313`:1313`
+预览地址：`http://localhost
 
 ## 写作
 

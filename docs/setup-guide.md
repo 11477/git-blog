@@ -90,7 +90,7 @@ git submodule update --remote --merge
 ```toml
 baseURL = 'https://yinchengwang.github.io/'
 locale = 'zh-cn'
-title = '胤澄的博客'
+title = 'cyw777的博客'
 theme = 'PaperMod'
 
 [pagination]
@@ -107,7 +107,7 @@ theme = 'PaperMod'
   UseHugoToc = true
 
   [params.homeInfoParams]
-    Title = '胤澄的博客'
+    Title = 'cyw777的博客'
     Content = '技术 / 思考 / 记录'
 
   [[params.socialIcons]]
