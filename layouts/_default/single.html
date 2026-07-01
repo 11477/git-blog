@@ -1,13 +1,16 @@
 {{- define "main" }}
 
-<div class="post-wrapper">
-  {{- $has_toc := false }}
-  {{- if (.Param "ShowToc") }}
-    {{- $headers := findRE "<h[1-6].*?>(.|\n])+?</h[1-6]>" .Content -}}
-    {{- $has_toc = ge (len $headers) 1 }}
-  {{- end }}
+{{- $has_toc := false }}
+{{- if (.Param "ShowToc") }}
+  {{- $headers := findRE "<h[1-6].*?>(.|\n])+?</h[1-6]>" .Content -}}
+  {{- $has_toc = ge (len $headers) 1 }}
+{{- end }}
 
+<div class="post-wrapper">
   {{- if $has_toc }}
+  <span class="toc-trigger" aria-label="大纲">
+    <span class="toc-trigger-icon">大纲</span>
+  </span>
   <aside class="post-toc-sidebar">
     <div class="toc-sidebar-inner">
       <div class="toc-sidebar-title">{{- i18n "toc" | default "目录" }}</div>

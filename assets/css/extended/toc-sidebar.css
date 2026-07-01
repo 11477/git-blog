@@ -1,38 +1,90 @@
-/* === 左边侧栏 TOC === */
+/* === TOC 浮动大纲 —— 不占正文宽度，hover 从左侧滑出 === */
+
 .post-wrapper {
-    display: flex;
-    gap: var(--gap);
-    max-width: calc(var(--main-width) + 280px);
-    margin: 0 auto;
+    position: relative;
 }
 
 article.post-single {
-    flex: 1;
-    min-width: 0; /* 防止 flex 子元素溢出 */
+    max-width: var(--main-width);
+    margin: 0 auto;
+    width: 100%;
 }
 
-/* 侧栏容器 */
-.post-toc-sidebar {
-    width: 240px;
-    flex-shrink: 0;
-    align-self: flex-start;
-    position: sticky;
-    top: calc(var(--header-height) + var(--gap));
-    max-height: calc(100vh - var(--header-height) - var(--gap) * 2);
-    overflow-y: auto;
-    padding: var(--gap);
+/* 触发按钮：固定在左边缘，竖向排列 */
+.toc-trigger {
+    position: fixed;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 101;
+    cursor: pointer;
+    display: block;
+}
+
+.toc-trigger-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 56px;
     background: var(--entry);
-    border-radius: var(--radius);
-    font-size: 14px;
+    border: 1px solid var(--border);
+    border-left: none;
+    border-radius: 0 6px 6px 0;
+    color: var(--secondary);
+    font-size: 13px;
+    writing-mode: vertical-rl;
+    letter-spacing: 2px;
+    transition: background 0.2s, color 0.2s, opacity 0.2s;
+    user-select: none;
 }
 
-.toc-sidebar-title {
-    font-weight: 600;
-    margin-bottom: 8px;
+.toc-trigger:hover .toc-trigger-icon {
+    background: var(--tertiary);
     color: var(--primary);
 }
 
-/* 列表样式 */
+/* TOC 面板：固定全高，左侧隐藏 */
+.post-toc-sidebar {
+    position: fixed;
+    left: -274px; /* 初始藏在屏幕外 */
+    top: 0;
+    z-index: 100;
+    width: 270px;
+    height: 100vh;
+    overflow-y: auto;
+    background: var(--theme);
+    border-right: 1px solid var(--border);
+    padding: calc(var(--header-height) + var(--gap)) calc(var(--gap) + 8px) var(--gap) var(--gap);
+    font-size: 14px;
+    transition: left 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 2px 0 16px rgba(0,0,0,0.1);
+}
+
+/* hover 触发按钮 → 面板滑出 */
+.toc-trigger:hover + .post-toc-sidebar {
+    left: 0;
+}
+
+/* hover 面板本身 → 保持展开（此时触发按钮被面板遮盖，但面板仍在 hover 态） */
+.post-toc-sidebar:hover {
+    left: 0;
+}
+
+/* 移除屏幕外 → 恢复隐藏（含过渡，鼠标离开面板后面板滑回） */
+/* 无需额外规则，上面两个 .post-toc-sidebar 的 left:0 移除了，自然回到 left:-274px */
+
+/* 标题 */
+.toc-sidebar-title {
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: var(--primary);
+    font-size: 15px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+
+/* 列表 */
 .toc-sidebar-nav ul {
     list-style: none;
     padding-left: 0;
@@ -44,7 +96,7 @@ article.post-single {
 }
 
 .toc-sidebar-nav li {
-    margin: 6px 0;
+    margin: 4px 0;
     line-height: 1.5;
 }
 
@@ -52,18 +104,17 @@ article.post-single {
     display: block;
     text-decoration: none;
     color: var(--secondary);
-    transition: color 0.15s ease;
     border-radius: 4px;
-    padding: 2px 4px;
+    padding: 3px 8px;
+    transition: color 0.15s, background 0.15s;
 }
 
-.toc-sidebar-nav a:hover,
-.toc-sidebar-nav a.active {
+.toc-sidebar-nav a:hover {
     color: var(--primary);
     background: var(--tertiary);
 }
 
-/* 滚动条美化 */
+/* 滚动条 */
 .post-toc-sidebar::-webkit-scrollbar {
     width: 4px;
 }
@@ -72,11 +123,9 @@ article.post-single {
     border-radius: 4px;
 }
 
-/* 小屏：TOC 隐藏 */
+/* 小屏隐藏 */
 @media screen and (max-width: 900px) {
-    .post-wrapper {
-        flex-direction: column;
-    }
+    .toc-trigger,
     .post-toc-sidebar {
         display: none;
     }
