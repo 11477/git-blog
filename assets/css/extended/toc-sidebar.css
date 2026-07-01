@@ -1,0 +1,83 @@
+/* === 左边侧栏 TOC === */
+.post-wrapper {
+    display: flex;
+    gap: var(--gap);
+    max-width: calc(var(--main-width) + 280px);
+    margin: 0 auto;
+}
+
+article.post-single {
+    flex: 1;
+    min-width: 0; /* 防止 flex 子元素溢出 */
+}
+
+/* 侧栏容器 */
+.post-toc-sidebar {
+    width: 240px;
+    flex-shrink: 0;
+    align-self: flex-start;
+    position: sticky;
+    top: calc(var(--header-height) + var(--gap));
+    max-height: calc(100vh - var(--header-height) - var(--gap) * 2);
+    overflow-y: auto;
+    padding: var(--gap);
+    background: var(--entry);
+    border-radius: var(--radius);
+    font-size: 14px;
+}
+
+.toc-sidebar-title {
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: var(--primary);
+}
+
+/* 列表样式 */
+.toc-sidebar-nav ul {
+    list-style: none;
+    padding-left: 0;
+    margin: 0;
+}
+
+.toc-sidebar-nav ul ul {
+    padding-left: 1em;
+}
+
+.toc-sidebar-nav li {
+    margin: 6px 0;
+    line-height: 1.5;
+}
+
+.toc-sidebar-nav a {
+    display: block;
+    text-decoration: none;
+    color: var(--secondary);
+    transition: color 0.15s ease;
+    border-radius: 4px;
+    padding: 2px 4px;
+}
+
+.toc-sidebar-nav a:hover,
+.toc-sidebar-nav a.active {
+    color: var(--primary);
+    background: var(--tertiary);
+}
+
+/* 滚动条美化 */
+.post-toc-sidebar::-webkit-scrollbar {
+    width: 4px;
+}
+.post-toc-sidebar::-webkit-scrollbar-thumb {
+    background: var(--tertiary);
+    border-radius: 4px;
+}
+
+/* 小屏：TOC 隐藏 */
+@media screen and (max-width: 900px) {
+    .post-wrapper {
+        flex-direction: column;
+    }
+    .post-toc-sidebar {
+        display: none;
+    }
+}
