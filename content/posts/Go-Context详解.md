@@ -3,273 +3,586 @@ title: "Go 学习笔记：Context 详解——goroutine 生命周期管理"
 date: 2026-07-01
 tags: ["Go", "并发", "面试"]
 categories: ["学习笔记"]
-summary: "Go 语言初学者的 Context 入门：为什么需要 Context、四个构造函数、Value 的惯用法、errgroup 配合模式、以及常见误区"
+summary: "例子驱动的 Go Context 讲解——每个功能从一个有痛点的场景出发，展示问题，再用 Context 解决，最后总结规律"
 draft: false
 ---
 
-> 这是「Go 学习笔记」系列的一篇。面向有基础编程经验、刚开始学 Go 的开发者，目标是讲清楚 Context 的**为什么存在、怎么用、什么时候用**。
+> 这篇不讲概念，讲场景。每个例子你都可以 copy 到 `main.go` 里直接跑。
 
-## 一、context 是什么，为什么要存在
+## 先跑起来：context 长什么样
 
-`context` 是 Go 标准库中的一个包，用于在 **goroutine 之间传递截止时间、取消信号和请求范围的键值对**。
-
-理解它的最简单方式：你启动了一个 HTTP 请求处理，这个请求内部又调数据库、调下游服务、写缓存。如果用户把浏览器关了，你希望这 3 个操作能一起停掉，而不是各自闷头跑到超时——**context 就是用来传这个"停！"信号的那根绳子**。
-
-```
-用户请求 → handler(ctx)
-                ├─ 查数据库(ctx)     ← 同一根绳子拴着
-                ├─ 调下游服务(ctx)    ← 同一条取消信号
-                └─ 写 Redis(ctx)      ← 同上
-```
-
-Go 标准库（`net/http`、`database/sql` 等）几乎所有涉及 I/O 的函数都接受 `context.Context` 作为第一个参数，这是 Go 的惯例。
-
-## 二、核心接口
+最简单的观察一下 context 是什么：
 
 ```go
-type Context interface {
-    Deadline() (deadline time.Time, ok bool)  // 什么时候到期
-    Done() <-chan struct{}                    // 返回一个 channel，context 被取消时会 close
-    Err() error                               // 为什么结束了（Canceled 或 DeadlineExceeded）
-    Value(key interface{}) interface{}         // 取携带的键值对
+package main
+
+import (
+    "context"
+    "fmt"
+)
+
+func main() {
+    ctx := context.Background()
+    fmt.Printf("ctx: %v\n", ctx)       // context.Background
+    fmt.Printf("Deadline: %v\n", ctx.Deadline()) // 0001-01-01 false (没有截止时间)
+    fmt.Printf("Err: %v\n", ctx.Err())         // nil (没被取消)
+    
+    // Done() 返回一个 channel，Background 永远不会 Done
+    // 所以下面这行会永久阻塞：
+    // <-ctx.Done()
 }
 ```
 
-你一般不直接实现这个接口，而是用标准库提供的构造函数来"创建"和"派生"。
+看到 `Background()` 就是一个"空壳"。真正有用的 context 都是从它派生出来的。往下看。
 
-## 三、四个构造函数
+---
 
-### 1. `context.Background()` 和 `context.TODO()`
+## 场景一：goroutine 跑太久，我想叫停它
 
-**它们是根 context**，没有超时、没有取消、不携带值，永远不会 Done。
+### 问题
 
 ```go
-ctx := context.Background()  // 程序主入口用
-ctx := context.TODO()         // 还没想好用什么 context 时占位
+package main
+
+import (
+    "fmt"
+    "time"
+)
+
+func main() {
+    go doWork()
+
+    time.Sleep(1 * time.Second) // 主 goroutine 等 1 秒就走了
+    fmt.Println("main 退出")
+    // 问题：doWork 还在跑，没人让它停！
+}
+
+func doWork() {
+    for {
+        fmt.Println("工作中...")
+        time.Sleep(200 * time.Millisecond)
+    }
+}
 ```
 
-大部分实际场景以它们为根，往下派生。
+运行结果：main 退出后 `doWork` 还在打印。如果你有 100 个这样的 goroutine，就泄漏了。
 
-### 2. `context.WithCancel(parent)` — 手动取消
-
-最常用的一种。返回新 ctx 和 `cancel` 函数：
+### 解法：WithCancel
 
 ```go
-ctx, cancel := context.WithCancel(context.Background())
+package main
 
-go func() {
-    select {
-    case <-ctx.Done():  // 收到取消信号
-        fmt.Println("goroutine 被取消:", ctx.Err())
+import (
+    "context"
+    "fmt"
+    "time"
+)
+
+func main() {
+    ctx, cancel := context.WithCancel(context.Background())
+    go doWork(ctx)
+
+    time.Sleep(1 * time.Second)
+    cancel() // 👈 叫停
+    time.Sleep(100 * time.Millisecond) // 等 doWork 收尾
+    fmt.Println("main 退出")
+}
+
+func doWork(ctx context.Context) {
+    for {
+        select {
+        case <-ctx.Done(): // 👈 收到取消信号
+            fmt.Println("doWork 被通知取消了，退出")
+            return
+        default:
+            fmt.Println("工作中...")
+            time.Sleep(200 * time.Millisecond)
+        }
+    }
+}
+```
+
+运行结果：
+
+```
+工作中...
+工作中...
+工作中...
+工作中...
+工作中...
+doWork 被通知取消了，退出
+main 退出
+```
+
+**关键**：`ctx.Done()` 返回一个 channel。你调 `cancel()` 后，这个 channel 被关闭，之前阻塞在 `<-ctx.Done()` 上的代码马上收到通知。
+
+---
+
+## 场景二：能不能自动超时，不用我手动 cancel？
+
+### 问题
+
+你写了个函数调外部 API，API 可能卡死。你不想手动设闹钟，希望"超过 3 秒就自动放弃"。
+
+### 解法：WithTimeout
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+)
+
+func main() {
+    // 3 秒后自动取消
+    ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+    defer cancel() // 👈 养成习惯：拿了 cancel 一定要 defer
+
+    result, err := fetchFromAPI(ctx)
+    if err != nil {
+        fmt.Println("出错:", err)
         return
     }
-}()
+    fmt.Println("结果:", result)
+}
 
-cancel()  // 任何地方调用它，所有子 goroutine 都会收到 Done() 信号
+func fetchFromAPI(ctx context.Context) (string, error) {
+    select {
+    case <-time.After(5 * time.Second): // 模拟 API 要 5 秒才回
+        return "API 返回的数据", nil
+    case <-ctx.Done(): // 👈 3 秒到，ctx 自动触发
+        return "", fmt.Errorf("请求被取消: %w", ctx.Err())
+    }
+}
 ```
 
-核心约定：**`cancel()` 不 return error，可以多次调用，但只有第一次有效。**
+输出：
 
-### 3. `context.WithDeadline(parent, time.Time)` — 指定时刻到期
-
-```go
-deadline := time.Now().Add(5 * time.Second)
-ctx, cancel := context.WithDeadline(context.Background(), deadline)
-defer cancel()  // 即使提前结束了也要记得调 cancel，释放资源
+```
+出错: 请求被取消: context deadline exceeded
 ```
 
-到点自动取消，你也可以手动提前 cancel。
+**关键**：`ctx.Err()` 告诉你**为什么**结束了——`context deadline exceeded`(超时) 或 `context canceled`(被手动 cancel)。
 
-### 4. `context.WithTimeout(parent, time.Duration)` — 指定时长后到期
+---
 
-就是对 `WithDeadline` 的语法糖：
+## 场景三：别人给我的 context，我想"加一个更紧的超时"
+
+一个很常见的真实场景：HTTP handler 自带的 ctx 有 60 秒超时，但你的数据库查询不能等那么久，你想给它一个 2 秒的限制。
 
 ```go
-ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+)
+
+func main() {
+    // 模拟 HTTP 请求自带的 ctx（60 秒超时）
+    parentCtx, _ := context.WithTimeout(context.Background(), 60*time.Second)
+
+    // 在 handler 里，你想给 DB 查询只 2 秒
+    queryDatabase(parentCtx)
+}
+
+func queryDatabase(parentCtx context.Context) {
+    // 👇 派生一个新的 ctx，2 秒后自动取消（不受 parent 的 60 秒影响）
+    ctx, cancel := context.WithTimeout(parentCtx, 2*time.Second)
+    defer cancel()
+
+    select {
+    case <-time.After(5 * time.Second): // 模拟慢查询
+        fmt.Println("查询完成")
+    case <-ctx.Done():
+        fmt.Println("查询超时:", ctx.Err()) // 2 秒后走到这里
+    }
+}
+```
+
+**关键**：子 ctx 的超时不能超过父 ctx。如果你设了 2 秒，父 ctx 设了 60 秒，那就是 2 秒后取消。反过来，如果父 ctx 只有 1 秒就过期了，你的"2 秒"实际上只有 1 秒——**取最紧的那个**。
+
+---
+
+## 场景四：一个操作要同时调多个下游，任何一个失败就全停
+
+美团下单：查库存、算运费、扣积分，三个可以同时做。但库存没了的话，运费和积分也别算了。
+
+### 不用 context 的写法（有泄漏）
+
+```go
+package main
+
+import (
+    "fmt"
+    "time"
+)
+
+func main() {
+    result := make(chan string, 3)
+
+    go checkStock(result)   // 3 秒
+    go calcShipping(result)  // 200 毫秒
+    go deductPoints(result) // 2 秒
+
+    // 取最快的结果
+    fmt.Println(<-result)
+    // ⚠️ 剩下两个 goroutine 还在跑，没人管
+}
+
+func checkStock(ch chan string) {
+    time.Sleep(3 * time.Second)
+    ch <- "库存不足!" // 这是第一个完成吗？不是，shipping 更快
+}
+
+func calcShipping(ch chan string) {
+    time.Sleep(200 * time.Millisecond)
+    ch <- "运费 5 元"
+}
+
+func deductPoints(ch chan string) {
+    time.Sleep(2 * time.Second)
+    ch <- "积分已扣"
+}
+```
+
+得到运费结果后，库存和积分 goroutine 还在白白跑。
+
+### 用 context 的写法（errgroup 版本）
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+
+    "golang.org/x/sync/errgroup"
+)
+
+func main() {
+    g, ctx := errgroup.WithContext(context.Background())
+
+    g.Go(func() error {
+        return checkStock(ctx)
+    })
+    g.Go(func() error {
+        return calcShipping(ctx)
+    })
+    g.Go(func() error {
+        return deductPoints(ctx)
+    })
+
+    if err := g.Wait(); err != nil {
+        fmt.Println("某个操作出错:", err)
+    }
+}
+
+func checkStock(ctx context.Context) error {
+    time.Sleep(3 * time.Second)
+    return fmt.Errorf("库存不足!") // 一 return error，ctx 自动 cancel
+}
+
+func calcShipping(ctx context.Context) error {
+    select {
+    case <-time.After(200 * time.Millisecond):
+        fmt.Println("运费计算完成")
+        return nil
+    case <-ctx.Done(): // checkStock 失败后 ctx 取消，走到这里
+        fmt.Println("运费计算被取消:", ctx.Err())
+        return ctx.Err()
+    }
+}
+
+func deductPoints(ctx context.Context) error {
+    select {
+    case <-time.After(2 * time.Second):
+        fmt.Println("积分扣除完成")
+        return nil
+    case <-ctx.Done(): // 同上
+        fmt.Println("积分扣除被取消:", ctx.Err())
+        return ctx.Err()
+    }
+}
+```
+
+输出（大概这样）：
+
+```
+运费计算完成
+积分扣除被取消: context canceled
+某个操作出错: 库存不足!
+```
+
+**关键**：`errgroup.WithContext` 返回的 ctx 有一个自动机制——**组里任何一个 goroutine return 了 error，ctx 立刻 cancel。** 其他 goroutine 只要在 select 里检测 `ctx.Done()`，就能优雅退出。
+
+---
+
+## 场景五：一个操作要调多个下游，全部完成才算成功（任一失败都要取消）
+
+和上面类似，但这次是"所有都成功才返回"：
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+
+    "golang.org/x/sync/errgroup"
+)
+
+func main() {
+    g, ctx := errgroup.WithContext(context.Background())
+
+    urls := []string{"api.example.com/a", "api.example.com/b", "api.example.com/c"}
+    results := make([]string, len(urls))
+
+    for i, url := range urls {
+        i, url := i, url // 👈 闭包陷阱：必须拷贝变量
+        g.Go(func() error {
+            return fetch(ctx, i, url, results)
+        })
+    }
+
+    if err := g.Wait(); err != nil {
+        fmt.Println("失败:", err) // 只要一个 URL 失败了，其他也收到 cancel
+    } else {
+        fmt.Println("全部成功:", results)
+    }
+}
+
+func fetch(ctx context.Context, index int, url string, results []string) error {
+    select {
+    case <-time.After(500 * time.Millisecond): // 模拟 HTTP 请求
+        results[index] = url + " -> 200 OK"
+        fmt.Printf("请求 %s 成功\n", url)
+        return nil
+    case <-ctx.Done():
+        fmt.Printf("请求 %s 被取消\n", url)
+        return ctx.Err()
+    }
+}
+```
+
+如果 `api.example.com/b` 的 `fetch` 里 `time.After` 换成一个实际请求、实际请求失败了 return error，其他 2 个请求自动被 cancel。
+
+---
+
+## 场景六：多个下游，拿到最快一个的结果就行，不需要任何失败的反馈
+
+还是下单场景，但这次要求是"不管谁先回来，拿到结果我就走"：
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+)
+
+func main() {
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
+
+    resultCh := make(chan string, 3)
+
+    go checkStock2(ctx, resultCh)   // 3 秒
+    go calcShipping2(ctx, resultCh)  // 200 毫秒
+    go deductPoints2(ctx, resultCh) // 2 秒
+
+    // 只要第一个结果
+    first := <-resultCh
+    cancel() // 👈 拿到结果后立刻取消其他两个
+    fmt.Println("最快结果:", first)
+    time.Sleep(100 * time.Millisecond) // 等它们打印取消消息
+}
+
+func checkStock2(ctx context.Context, ch chan<- string) {
+    select {
+    case <-time.After(3 * time.Second):
+        ch <- "库存充足"
+    case <-ctx.Done():
+        fmt.Println("库存检查被取消")
+    }
+}
+
+func calcShipping2(ctx context.Context, ch chan<- string) {
+    select {
+    case <-time.After(200 * time.Millisecond):
+        ch <- "运费 5 元"
+    case <-ctx.Done():
+        fmt.Println("运费计算被取消")
+    }
+}
+
+func deductPoints2(ctx context.Context, ch chan<- string) {
+    select {
+    case <-time.After(2 * time.Second):
+        ch <- "积分已扣"
+    case <-ctx.Done():
+        fmt.Println("积分扣除被取消")
+    }
+}
+```
+
+输出：
+
+```
+最快结果: 运费 5 元
+库存检查被取消
+积分扣除被取消
+```
+
+和场景四的区别：这里不用 errgroup，手动 `cancel()`，因为**不需要知道"失败原因"**，只知道"最快的人到了，其他人收工"。
+
+---
+
+## 场景七：在 context 里传 trace id，让整个调用链日志都能关联
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log/slog"
+    "os"
+)
+
+// 👈 不导出的自定义类型，外面的人猜不到 key
+type traceIDKey struct{}
+
+func main() {
+    logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+    
+    ctx := context.Background()
+    ctx = context.WithValue(ctx, traceIDKey{}, "abc-123-x")
+
+    handleRequest(ctx, logger)
+}
+
+func handleRequest(ctx context.Context, logger *slog.Logger) {
+    traceID, _ := ctx.Value(traceIDKey{}).(string) // 断言成 string
+    
+    logger.Info("请求开始", "trace_id", traceID)  // trace_id=abc-123-x
+    queryUser(ctx, logger)
+    logger.Info("请求结束", "trace_id", traceID)
+}
+
+func queryUser(ctx context.Context, logger *slog.Logger) {
+    traceID, _ := ctx.Value(traceIDKey{}).(string)
+    
+    logger.Info("查询用户表", "trace_id", traceID) // 同一个 trace_id
+
+    // 只需要 trace id，不需要 override 原来的——直接用父 ctx
+    // 不需要 WithValue
+}
+```
+
+输出：
+
+```
+time=... level=INFO msg="请求开始" trace_id=abc-123-x
+time=... level=INFO msg="查询用户表" trace_id=abc-123-x
+time=... level=INFO msg="请求结束" trace_id=abc-123-x
+```
+
+**关键**：`WithValue` 是插入新值，**不会覆盖**已有的值。`queryUser` 直接用 `ctx` 就能拿到 handler 层注入的 trace_id。
+
+---
+
+## 场景八：数据库操作超时（真实库的用法）
+
+之前都是模拟的 `select` + `time.After`。真正调用 `database/sql` 时，context 是这么用的：
+
+```go
+package main
+
+import (
+    "context"
+    "database/sql"
+    "fmt"
+    "time"
+
+    _ "github.com/lib/pq" // Postgres 驱动
+)
+
+func getUserByID(db *sql.DB, id int) (string, error) {
+    // 整个数据库调用的上限是 2 秒
+    ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+    defer cancel()
+
+    var name string
+    err := db.QueryRowContext(ctx, "SELECT name FROM users WHERE id = $1", id).Scan(&name)
+    if err != nil {
+        return "", fmt.Errorf("查询用户 %d 失败: %w", id, err)
+    }
+    return name, nil
+}
+```
+
+标准库所有 I/O 操作都有带 `Context` 后缀的版本：
+
+| 无 context | 有 context |
+|------------|-----------|
+| `db.Query(sql)` | `db.QueryContext(ctx, sql)` |
+| `db.QueryRow(sql)` | `db.QueryRowContext(ctx, sql)` |
+| `db.Exec(sql)` | `db.ExecContext(ctx, sql)` |
+| `http.NewRequest(method, url, body)` | `http.NewRequestWithContext(ctx, method, url, body)` |
+| `net.Dial(network, address)` | `net.DialContext(ctx, network, address)` |
+
+**只要做 I/O，就用 Context 版本。** 这是 Go 社区的铁律。
+
+---
+
+## 总结：你怎么记住这些
+
+假设你是公司老板（main goroutine），下属在干活（goroutine），context 就是你给下属的那张**任命书**。任命书上写了三样东西：
+
+> 给你 3 天时间（**超时**），过期我这任命就作废。
+> 如果我打电话告诉你停，你就停（**取消**）。
+> 上面还贴了一个项目编号，所有报销单上都填同一个编号（**Value**）。
+
+对应到代码就是：
+
+```go
+// 创建任命书
+ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 defer cancel()
+// 贴上项目编号
+ctx = context.WithValue(ctx, projectIDKey{}, "proj-42")
+
+// 交给下属
+go doJob(ctx)
 ```
 
-## 四、四种类型的关系：context 树
-
-context 是**树状结构**，每个派生操作都是挂到父节点下：
-
-```
-Background()
-     └─ WithTimeout(5s)           // 客户端请求超时 5s
-            ├─ WithValue("traceID")  // 挂了 trace id
-            │      └─ WithTimeout(2s)  // 数据库操作只用 2s
-            └─ WithCancel()           // 手动取消的下游请求
-                   └─ ...
-```
-
-取消是**向下传播**的：当父节点被取消，所有子节点都会收到信号。但反向不会——一个子节点 cancel 了，其他兄弟不受影响。
+下属在工作里，只要在每次"等回复"的地方看一眼任命书还在不在：
 
 ```go
-parentCtx, cancel := context.WithCancel(context.Background())
-
-childCtx1, _ := context.WithCancel(parentCtx)
-childCtx2, _ := context.WithCancel(parentCtx)
-
-cancel() // 关闭 parentCtx
-// childCtx1 和 childCtx2 同时收到 Done() 信号
-```
-
-## 五、Value——在 context 中传递请求范围的数据
-
-```go
-type contextKey string                              // 自定义类型防止 key 冲突（重要！）
-const requestIDKey contextKey = "requestID"
-
-// 写入
-ctx := context.WithValue(context.Background(), requestIDKey, "abc-123")
-
-// 读取
-id, ok := ctx.Value(requestIDKey).(string)  // 记得用类型断言
-if !ok {
-    id = "unknown"
-}
-```
-
-**规则**：
-- **只放请求范围的数据**：trace id、user token、请求开始时间。不要放业务参数。
-- key 不应该是基础类型（如直接用 `string`），用自定义类型防止不同包的 key 撞车
-
-**为什么不能用 `string` 作为 key**：Value 的底层是沿着父节点一路向上查，靠 `==` 比较 key。如果你和第三方库都用了 `string("id")`，你的值就可能被它的覆盖。
-
-```go
-// 错误示范
-ctx = context.WithValue(ctx, "id", "foo")  // 别这样，可能被其他包覆盖
-
-// 正确示范
-type traceIDKey struct{}                    // 不导出的空 struct，只有本包能用
-ctx = context.WithValue(ctx, traceIDKey{}, "foo")
-```
-
-## 六、一个完整的实际例子
-
-模拟一个 HTTP handler 查数据库时受超时控制：
-
-```go
-func handler(w http.ResponseWriter, r *http.Request) {
-    ctx := r.Context()                           // HTTP 请求自带 context
-
-    // 基于请求 ctx 再加一层超时：整个处理过程 3 秒
-    ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-    defer cancel()
-
-    result, err := queryDatabase(ctx, "SELECT ...")  // ctx 传进去
-    if err == context.DeadlineExceeded {
-        http.Error(w, "数据库查询超时", http.StatusGatewayTimeout)
-        return
-    }
-    // ...
-}
-
-func queryDatabase(ctx context.Context, sql string) (string, error) {
-    // 模拟一个支持 context 的数据库操作
-    done := make(chan string, 1)
-
-    go func() {
-        time.Sleep(2 * time.Second)  // 模拟耗时操作
-        done <- "查询结果"
-    }()
-
+func doJob(ctx context.Context) {
     select {
-    case result := <-done:
-        return result, nil
-    case <-ctx.Done():                    // ctx 超时或者被取消
-        return "", ctx.Err()              // 返回 context.DeadlineExceeded
+    case result := <-doSlowThing():
+        return result
+    case <-ctx.Done(): // 👈 "任命书过期了 / 被撤销了"
+        return ctx.Err()
     }
 }
 ```
 
-## 七、context 的传递规则
+六个核心场景对应的选择：
 
-- **第一个参数永远是 `ctx context.Context`**。官方建议叫 `ctx`，不要叫别的。
-- **不要存到 struct 里长久保存**（它代表请求生命周期，请求结束就应该丢弃）。
-- `context.Background()` 只在 `main`、`init` 或测试里出现。
-- **派生 context 后一定要 defer cancel()**，否则子 goroutine 和资源永远得不到释放（goroutine 泄漏）。
-
-```go
-ctx, cancel := context.WithTimeout(parent, 5*time.Second)
-defer cancel()  // 不管是正常走完、return、panic，都释放
-```
-
-### goroutine 泄漏是什么
-
-```go
-// 泄漏的代码
-func leakyQuery() {
-    ch := make(chan string)
-    go func() {
-        time.Sleep(30 * time.Second)  // 模拟慢查询
-        ch <- "done"
-    }()
-    select {
-    case <-ch:
-        return
-    case <-time.After(1 * time.Second):
-        return  // 超时返回了，但上面的 goroutine 还活着，30 秒后才结束
-    }
-}
-```
-
-加了 context 之后就没有这个问题：
-
-```go
-func safeQuery(ctx context.Context) (string, error) {
-    ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-    defer cancel()
-    // 使用支持 context 的标准库或第三库，goroutine 会在 ctx.Done() 时被回收
-    // ...
-}
-```
-
-## 八、和 errgroup 配合
-
-这是生产上最常见的用法。`golang.org/x/sync/errgroup` 提供了带 context 的 goroutine 组：
-
-```go
-import "golang.org/x/sync/errgroup"
-
-g, ctx := errgroup.WithContext(context.Background())
-
-g.Go(func() error {
-    return fetchUser(ctx, userID)   // 其中一个失败了，ctx 自动被 cancel
-})
-g.Go(func() error {
-    return fetchOrders(ctx, userID) // 另外一个也会收到取消信号
-})
-
-if err := g.Wait(); err != nil {
-    log.Println("出错了:", err)
-}
-```
-
-**这点很重要**：`errgroup.WithContext` 返回的 ctx 会在任何一个 goroutine return error 时自动触发 cancel，你不用手动调。
-
-## 九、两个常见误区
-
-**误区 1："context 没传进去，代码也能跑"**
-
-```go
-func badQuery() {
-    rows, _ := db.Query("SELECT ...") // 没有 ctx，没有超时控制
-}
-```
-
-数据库连不上，它永远卡在那。**所有 I/O 操作都应该带 context**。
-
-**误区 2：在 context 里存大对象**
-
-```go
-ctx = context.WithValue(ctx, "user", largeUserObject) // 不要
-```
-
-`Value` 链是线性查找，会越传越重。只存小粒度的元数据（trace id 等），业务对象直接当参数传。
-
-## 十、一句话总结
-
-context 是 Go 的 **goroutine 生命周期管理机制**，解决的核心需求：**一个操作被取消了，它派生的所有子操作都收到信号并退出来**。核心就三件事：**超时**、**取消**、**传递请求范围的值**。
-
-初学者只需要背下一句：每个 I/O 函数装一个 `ctx` 作为第一个参数，主函数用 `context.WithTimeout` 或 `context.WithCancel` 派生它，记得 `defer cancel()`。先做到这两步，其余的用到了再查。
+| 需求 | 用什么 |
+|------|--------|
+| 手动叫停某个 goroutine | `WithCancel` |
+| 超过 N 秒自动放弃 | `WithTimeout` |
+| 某个时间点自动放弃 | `WithDeadline` |
+| 传递 trace id / 用户 token | `WithValue` |
+| 并发跑多个操作，任一失败全停 | `errgroup.WithContext` |
+| 并发跑多个操作，拿最快结果就行 | `WithCancel` + channel |
