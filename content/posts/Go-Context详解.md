@@ -207,6 +207,66 @@ func queryDatabase(parentCtx context.Context) {
 
 ---
 
+## 前置：认识 errgroup
+
+errgroup 是 Go 官方扩展库 `golang.org/x/sync/errgroup` 里的一个包。你把它理解成 **"sync.WaitGroup 加上 context 自动取消"** 就行。
+
+如果你用过 `sync.WaitGroup`，对比一下就很清楚了：
+
+```go
+// 传统 WaitGroup：三个 goroutine，主 goroutine 等它们都跑完
+var wg sync.WaitGroup
+for i := 0; i < 3; i++ {
+    wg.Add(1)
+    go func(id int) {
+        defer wg.Done()
+        doWork(id)
+    }(i)
+}
+wg.Wait()  // 阻塞直到三个都 Done()
+```
+
+WaitGroup 的问题是：**你只知道"做完了"，不知道"谁失败了"。** 而且如果第一个 goroutine 就失败，后面两个还在白跑，你没法通知它们停。
+
+errgroup 同时解决这两件事：
+
+```go
+// errgroup 版本
+g, ctx := errgroup.WithContext(context.Background())
+g.Go(func() error { return doWork1(ctx) })  // return error 表示失败
+g.Go(func() error { return doWork2(ctx) }) 
+g.Go(func() error { return doWork3(ctx) }) 
+err := g.Wait() // 👈 等所有 goroutine 完成，如果任何一个 return error，err 非 nil
+```
+
+它只有两个方法：
+- **`Go(fn)`** — 启动一个 goroutine。fn 必须签名 `func() error`，所以你要在 fn 里**return error** 表示失败，而不是用 panic。
+- **`Wait()`** — 等同 WaitGroup 的 Wait，但它会**收集第一个 error** 并返回。
+
+**和 context 的联动**是它的真正价值：`errgroup.WithContext` 返回的 `ctx` 在**任何一个 goroutine return error 时自动 cancel**。其他 goroutine 只要在 `select` 里检测 `ctx.Done()`，就能优雅退出。
+
+```go
+g, ctx := errgroup.WithContext(context.Background())
+
+g.Go(func() error {
+    // 这个 goroutine 失败了
+    return fmt.Errorf("库 存不足")
+})
+g.Go(func() error {
+    select {
+    case <-time.After(10 * time.Second): // 慢操作
+    case <-ctx.Done(): // 👈 上面那个失败了，这个 cv (context) 自动 cancel，走到这里
+        return ctx.Err()
+    }
+})
+// ...
+err := g.Wait() // "库存不足"
+```
+
+⚠️ `g.Wait()` 只返回**第一个** error，后面的被吞掉。如果每个 goroutine 的 error 都重要，需要自己用 channel 收集。
+
+**总结三句话**：errgroup 是 context 的完美搭档——context 负责发"停"信号，errgroup 负责组织 goroutine + 在"第一个失败"时自动触发 cancel。记住这个关系就行，后面的场景你会反复看到。
+
 ## 场景四：一个操作要同时调多个下游，任何一个失败就全停
 
 美团下单：查库存、算运费、扣积分，三个可以同时做。但库存没了的话，运费和积分也别算了。
