@@ -1,4 +1,8 @@
-# 多 Agent 研发工作流产品介绍
+---
+title: "多 Agent 研发工作流产品介绍"
+date: 2026-08-23
+draft: false
+---
 
 > 面向研发团队的 AI 研发协作与交付工作流  
 > 当前能力范围：产品设计、后端开发、独立 Code Review、Agent 测试与人工上线协作
@@ -39,7 +43,7 @@
 
 AI Coding 提升了代码生成速度，但不会自动解决研发流程中的上下游问题。随着 AI 生成能力增强，团队的主要瓶颈逐渐转移到以下环节：
 
-![AI 编码提效后的团队交付问题](./product-introduction-diagrams/ai-coding-team-delivery-problems.png)
+![AI 编码提效后的团队交付问题](../product-introduction-diagrams/ai-coding-team-delivery-problems.png)
 
 ### 2.1 需求理解不完整
 
